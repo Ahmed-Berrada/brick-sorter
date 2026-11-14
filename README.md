@@ -46,6 +46,7 @@ Then, in this order:
 | Step | Command | What it checks or does |
 |---|---|---|
 | 1 | `uv run brick-sorter doctor` | OpenVINO GPU/NPU, groups, models, arm at 12 V, camera serials |
+| 1b | `uv run brick-sorter cameras` | finds and tests **any** camera models (formats, fps, USB 3), saves snapshots, asks which one is wrist / top / inspect and writes them to `config/local.toml`. Add `--preview` for a live page of all cameras on :8081 |
 | 2 | `uv run brick-sorter calib` | **reads the motors (read-only)** and compares them with `calibration/follower/follower.json` |
 | 3 | `uv run brick-sorter teach home yellow orange purple` | torque off, hand-guide the arm to each pose, press Enter |
 | 4 | `uv run brick-sorter bench --torch cpu` | OPTIMIZE table: PyTorch baseline vs OpenVINO CPU/GPU/NPU, median and p99 |
@@ -80,6 +81,19 @@ These differences are far too large for a calibration drift. The servo horns wer
 arm, so a constant joint offset can't make the existing policy work. **Train on your colleagues' demos recorded
 with this calibration** (below). If the gap is ever small (under 10°), put the printed numbers in
 `[arm] joint_offset` and the policy can be reused.
+
+## Using different cameras
+
+The defaults in `config/station.toml` are one specific kit: a Sonix USB wrist camera and two RealSense D415s. On
+any other set of cameras, run `uv run brick-sorter cameras`. It tests each camera, saves a snapshot to
+`runs/cameras/<n>.jpg`, and writes your wrist / top / inspect choice into `config/local.toml`.
+Non-interactive form: `--assign wrist=2,top=1,inspect=3`.
+
+- **The policy must be trained with the same cameras, mounted the same way.** Record the demos on this station
+  after assigning the cameras.
+- **The inspection models were trained on a RealSense D415 at the inspect position.** With a different inspect
+  camera, check the decisions on known plain, circle and cross bricks before trusting them. If plain bricks score
+  above the threshold, re-tune `[inspect] threshold`, or retrain PatchCore on plain bricks from the new camera.
 
 ## Training your own pick policy
 

@@ -120,6 +120,7 @@ step "done"
 [ "$NEED_RELOGIN" = 1 ] && warn "log out and back in (or reboot) so the new groups apply"
 cat <<EOF
 Next:
+  uv run brick-sorter -c config/local.toml cameras                       # find/test/assign wrist, top, inspect
   uv run brick-sorter -c config/local.toml calib                         # motors vs calibration file
   uv run brick-sorter -c config/local.toml teach home yellow orange purple
   uv run brick-sorter -c config/local.toml bench --torch cpu             # OPTIMIZE table

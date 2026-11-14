@@ -219,6 +219,79 @@ def cmd_calib(a) -> int:
         robot.bus.disconnect(disable_torque=False)
 
 
+# ---------------------------------------------------------------------------------------------- cameras
+def cmd_cameras(a) -> int:
+    from brick_sorter import camera_setup as cs
+
+    cfg = C.load(a.config)
+    w, h, fps = cfg["cameras"]["width"], cfg["cameras"]["height"], cfg["cameras"]["fps"]
+    cams = cs.list_cameras()
+    if not cams:
+        print("no cameras found. Check USB, `ls /dev/video*`, and that you are in the video group.")
+        return 1
+    snap_dir = ROOT / "runs" / "cameras"
+    print(f"found {len(cams)} camera(s); testing each at {w}x{h}@{fps} (close Studio / other camera apps first)\n")
+    for i, c in enumerate(cams, 1):
+        r = cs.test(c, w, h, fps, snap_dir, i)
+        status = (f"OK   {r.get('size')} {r.get('fps')} fps" + (f" {r['format']}" if r.get("format") else "")
+                  if r.get("ok") else "FAIL")
+        print(f"#{i}  {status:28s} {c.name}")
+        print(f"      {c.kind}: {c.source}" + (f"   (USB {c.usb})" if c.usb else ""))
+        if c.formats:
+            print(f"      formats: {', '.join(c.formats)}")
+        print(f"      tried: {r.get('tried')}")
+        for warn in cs.warnings_for(c, w, h, fps):
+            print(f"      ! {warn}")
+        if r.get("snapshot"):
+            print(f"      snapshot: {r['snapshot']}")
+    current = {role: cfg["cameras"][role] for role in CAMERAS}
+    print("\ncurrent config:")
+    for role, spec in current.items():
+        hit = [i for i, c in enumerate(cams, 1) if str(spec.get("source")) in (c.source, c.node)]
+        print(f"  {role:8s} {spec.get('kind')}: {spec.get('source')}  -> {'#' + str(hit[0]) if hit else 'NOT CONNECTED'}")
+
+    if a.preview:
+        cs.preview(cams, w, h, fps, cfg["web"]["host"], a.preview_port)
+
+    if a.assign:
+        pairs = dict(kv.split("=", 1) for kv in a.assign.split(","))
+    elif sys.stdin.isatty() and not a.no_assign:
+        print("\nWhich camera is which? Look at the snapshots (or use --preview). Enter a number, blank = keep.")
+        pairs = {}
+        for role in CAMERAS:
+            ans = input(f"  {role:8s} #").strip()
+            if ans:
+                pairs[role] = ans
+    else:
+        return 0
+    if not pairs:
+        print("nothing changed")
+        return 0
+    mapping = {role: dict(current[role]) for role in CAMERAS}
+    for role, num in pairs.items():
+        if role not in CAMERAS:
+            print(f"unknown role {role!r} (use wrist, top, inspect)")
+            return 2
+        idx = int(num.lstrip("#")) - 1
+        if not 0 <= idx < len(cams) or not cams[idx].result.get("ok"):
+            print(f"#{num} is not a working camera")
+            return 2
+        mapping[role] = cs.spec_for(cams[idx])
+    used = [str(m["source"]) for m in mapping.values()]
+    if len(set(used)) != len(used):
+        print(f"the same camera is assigned twice: {mapping}")
+        return 2
+    local = Path(a.config) if a.config else ROOT / "config" / "local.toml"
+    local = local if local.is_absolute() else ROOT / local
+    cs.write_assignment(local, mapping)
+    print(f"\nwrote to {local}:")
+    for role in CAMERAS:
+        print(f"  {role:8s} {mapping[role]}")
+    if not a.config:
+        print("run with it: scripts/run.sh (uses config/local.toml), or brick-sorter -c config/local.toml ...")
+    return 0
+
+
 # ---------------------------------------------------------------------------------------------- doctor
 def cmd_doctor(a) -> int:
     import glob
@@ -292,12 +365,14 @@ def cmd_doctor(a) -> int:
             line(False, "pyrealsense2", str(e))
         for cam in CAMERAS:
             spec = cfg["cameras"][cam]
+            fix = "not connected: run `brick-sorter cameras` to find and assign your cameras"
             if spec["kind"] == "realsense":
-                line(spec["source"] in serials, f"camera {cam}: RealSense {spec['source']}", f"connected: {serials}")
+                ok = spec["source"] in serials
+                line(ok, f"camera {cam}: RealSense {spec['source']}", "" if ok else f"{fix} (RealSense here: {serials})")
             elif spec["kind"] == "uvc":
                 src = spec["source"]
-                line(Path(src).exists() if not str(src).isdigit() else Path(f"/dev/video{src}").exists(),
-                     f"camera {cam}: {src}")
+                ok = Path(src).exists() if not str(src).isdigit() else Path(f"/dev/video{src}").exists()
+                line(ok, f"camera {cam}: {src}", "" if ok else fix)
     print("\nall good" if not bad else f"\n{bad} problem(s)")
     return 0 if not bad else 1
 
@@ -388,6 +463,13 @@ def main(argv=None) -> int:
     s.add_argument("--offline", action="store_true", help="files only, no arm")
     s.add_argument("--write", action="store_true", help="offer to write the file to the motors if they differ")
     s.set_defaults(fn=cmd_calib)
+
+    s = sub.add_parser("cameras", help="find and test every camera, then assign wrist / top / inspect")
+    s.add_argument("--assign", help="non-interactive, e.g. wrist=2,top=1,inspect=3 (numbers from the listing)")
+    s.add_argument("--no-assign", action="store_true", help="only list and test")
+    s.add_argument("--preview", action="store_true", help="live page of all cameras to tell them apart")
+    s.add_argument("--preview-port", type=int, default=8081)
+    s.set_defaults(fn=cmd_cameras)
 
     s = sub.add_parser("doctor", help="check the machine")
     s.add_argument("--no-hardware", action="store_true")
