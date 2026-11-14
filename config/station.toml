@@ -1,0 +1,68 @@
+# brick-sorter station configuration. Paths are relative to the project root.
+# Copy to config/local.toml and edit for your machine; `brick-sorter run -c config/local.toml`.
+
+[arm]
+# /dev/serial/by-id/... is stable across re-plugs (scripts/setup_intel.sh also adds /dev/so101-follower).
+# "auto" picks the arm whose servos read >= 9 V (the follower runs on 12 V, the leader on 5 V).
+port = "auto"
+id = "follower"
+calibration_dir = "calibration/follower"   # follower.json (LeRobot calibration) + poses.json (taught poses)
+max_speed = 40.0        # deg/s per joint while the policy drives
+move_speed = 50.0       # deg/s for scripted moves (place, home)
+fps = 30
+# Calibration drift since the policy's training data, deg (policy sees state - offset, actions get + offset).
+# `brick-sorter calib --against <file>` computes it.
+joint_offset = { shoulder_pan = 0.0, shoulder_lift = 0.0, elbow_flex = 0.0, wrist_flex = 0.0, wrist_roll = 0.0, gripper = 0.0 }
+
+[cameras]
+width = 640
+height = 480
+fps = 30
+# kind = "uvc" (path or index; fourcc "MJPG" is needed over WSL / busy USB hubs) or "realsense" (serial)
+wrist   = { kind = "uvc", source = "/dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._USB2.0_CAM1_USB2.0_CAM1-video-index0", fourcc = "MJPG" }
+top     = { kind = "realsense", source = "346422061366" }
+inspect = { kind = "realsense", source = "243722062690" }
+
+[policy]
+backend = "openvino"               # openvino | torch | fake
+path = "models/act_openvino"       # openvino: dir with act.xml; torch: LeRobot checkpoint dir (models/act)
+device = "GPU"                     # openvino: GPU | CPU | NPU ; torch: xpu | cpu
+n_action_steps = 100               # actions executed per predicted chunk (chunk is 100)
+pick_timeout = 40.0                # s without a presented brick -> give up this attempt
+present_still_s = 1.0              # arm still this long while holding = brick presented to the camera
+holding_gripper = [3.0, 15.0]      # gripper reading range that means "a brick is in the jaws"
+
+[inspect]
+backend = "openvino"               # openvino | fake
+patchcore = "models/patchcore"     # Anomalib PatchCore export (model.xml)
+classifier = "models/yolo"         # YOLO circle/cross/plain (best.xml); "" = Anomalib only (marked -> defective)
+device = "NPU"                     # NPU | GPU | CPU (falls back to CPU if missing)
+crop = [160, 80, 320, 320]         # x, y, w, h of the brick face in the inspect frame (find it with the web page)
+frames = 3                         # frames averaged per inspection
+threshold = 0.9991861979166667     # PatchCore score >= threshold -> marked (externally calibrated, see model README)
+uncertain_band = 0.0              # optional: |score - threshold| below this -> uncertain (scores saturate near 1.0)
+# Anomalib and the classifier must agree (validated rule: 97% accurate on the bricks it decides,
+# the rest re-inspected): anomalous + cross/circle -> that mark; normal + plain -> plain; anything else uncertain.
+min_confidence = 0.8               # classifier mean probability needed
+min_margin = 0.2                   # ... and margin over the runner-up
+settle_s = 0.5                     # wait after the brick is presented before grabbing frames
+
+[rules]
+# outcome -> bowl. The bowl's taught pose (poses.json) must have the same name.
+plain = "yellow"
+circle = "orange"
+cross = "purple"
+max_uncertain = 2                  # inspections before an uncertain brick goes to `fallback`
+fallback = "purple"
+reinspect_roll_deg = 25.0          # turn wrist_roll this much between re-inspections (0 = just re-grab frames)
+
+[place]
+open_gripper = 35.0                # gripper value that releases the brick
+dwell_s = 0.4
+
+[web]
+host = "0.0.0.0"
+port = 8080
+
+[log]
+dir = "runs"

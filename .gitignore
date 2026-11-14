@@ -1,0 +1,10 @@
+.venv/
+runs/
+models/*/
+!models/README.md
+__pycache__/
+*.pyc
+config/local.toml
+calibration/follower/motors_read.json
+**/cache/
+*.egg-info/

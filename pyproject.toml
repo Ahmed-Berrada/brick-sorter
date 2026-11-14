@@ -1,0 +1,42 @@
+[project]
+name = "brick-sorter"
+version = "0.1.0"
+description = "SO-101 pick -> inspect -> sort orchestrator for Intel Core Ultra (OpenVINO on CPU/GPU/NPU)"
+requires-python = ">=3.12"
+dependencies = [
+    "lerobot[feetech]==0.7.0",  # SO-101 servo bus + the optional PyTorch ACT backend
+    "openvino>=2026.4.1",
+    "pyrealsense2>=2.55",
+    "numpy",
+    "opencv-python",
+    "torch",        # listed directly so the CPU-wheel index below applies (uv pins only direct dependencies)
+    "torchvision",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project.scripts]
+brick-sorter = "brick_sorter.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+# PyTorch is only needed by LeRobot's imports and the optional torch backend: use the small CPU wheels
+# (the default PyPI build pulls ~3 GB of CUDA libraries an Intel machine cannot use).
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+torchvision = { index = "pytorch-cpu" }
+
+[tool.setuptools.packages.find]
+include = ["brick_sorter*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
