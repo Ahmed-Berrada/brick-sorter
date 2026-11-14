@@ -95,6 +95,40 @@ Non-interactive form: `--assign wrist=2,top=1,inspect=3`.
   camera, check the decisions on known plain, circle and cross bricks before trusting them. If plain bricks score
   above the threshold, re-tune `[inspect] threshold`, or retrain PatchCore on plain bricks from the new camera.
 
+## Plugging in your trained policy
+
+Put these in `config/local.toml`:
+
+**ACT exported to OpenVINO from Studio.** This is the fastest option and runs on the Intel GPU:
+```toml
+[policy]
+backend = "openvino"
+path = "models/act_openvino"      # act.xml + act.bin + manifest.json
+device = "GPU"
+```
+
+**Any LeRobot checkpoint (ACT, SmolVLA, ...) in PyTorch.** Point `path` at the training output's
+`pretrained_model` folder:
+```toml
+[policy]
+backend = "lerobot"
+path = "/path/to/outputs/train/<run>/checkpoints/last/pretrained_model"
+device = "xpu"                    # needs scripts/setup_intel.sh --xpu; "cpu" works but is slow
+task = "pick up the brick"        # SmolVLA: EXACTLY the task string used when recording
+camera_map = { camera1 = "wrist", camera2 = "top", camera3 = "inspect" }   # only if the cameras were renamed
+```
+SmolVLA was checked with `lerobot/smolvla_base`: it loads, maps the cameras and returns 50-step chunks. On a laptop
+CPU each chunk takes about 20 s, which can't drive the arm. Use `--xpu` (Intel GPU) for SmolVLA, or the OpenVINO
+ACT export.
+
+**A pick-only policy** (the demos end with the brick lifted, not held at the inspect camera): teach where the
+brick should be shown, and the loop carries it there after the pick.
+```toml
+[policy]
+present_pose = "inspect"          # then: brick-sorter teach inspect
+holding_gripper = [<low>, <high>] # gripper reading while holding a brick, measured on YOUR arm
+```
+
 ## Training your own pick policy
 
 1. Record in the exact deployment setup. Name the cameras `wrist`, `top` and `inspect`, record at 640×480 and

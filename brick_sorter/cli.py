@@ -327,7 +327,7 @@ def cmd_doctor(a) -> int:
             line(g in groups or None, f"user in group {g}", "" if g in groups else f"sudo usermod -aG {g} $USER; log out/in")
     except Exception:  # noqa: BLE001
         pass
-    for key, files in (("policy", ["act.xml"] if cfg["policy"]["backend"] == "openvino" else ["model.safetensors"]),
+    for key, files in (("policy", ["act.xml"] if cfg["policy"]["backend"] == "openvino" else ["config.json"]),
                        ("inspect.patchcore", ["model.xml"]), ("inspect.classifier", ["best.xml", "classifier.json"])):
         sec, _, k = key.partition(".")
         d = Path(cfg[sec][k or "path"]) if cfg[sec].get(k or "path") else None
@@ -348,7 +348,8 @@ def cmd_doctor(a) -> int:
     from brick_sorter.reasoner import required_poses
 
     poses = Poses(Path(cfg["arm"]["calibration_dir"]) / "poses.json")
-    miss = [p for p in required_poses(cfg["rules"]) if not poses.has(p)]
+    need = required_poses(cfg["rules"]) + ([cfg["policy"]["present_pose"]] if cfg["policy"].get("present_pose") else [])
+    miss = [p for p in need if not poses.has(p)]
     line(not miss or None, "taught poses", f"teach: brick-sorter teach {' '.join(miss)}" if miss else ", ".join(sorted(poses.data)))
     if not a.no_hardware:
         from brick_sorter.arm import serial_ports, supply_volts

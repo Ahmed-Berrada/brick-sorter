@@ -13,6 +13,9 @@ dependencies = [
     "torchvision",
 ]
 
+[project.optional-dependencies]
+smolvla = ["lerobot[feetech,smolvla]==0.7.0"]   # uv sync --extra smolvla
+
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"

@@ -60,8 +60,14 @@ class Orchestrator:
         self.max_bricks: int | None = None
 
     # ------------------------------------------------------------------ control
+    @property
+    def present_pose(self) -> str:
+        """Taught pose to carry the brick to after a pick-only policy ("" = the policy presents it itself)."""
+        return self.cfg["policy"].get("present_pose", "") or ""
+
     def missing_poses(self) -> list[str]:
-        return [p for p in required_poses(self.rules) if not self.poses.has(p)]
+        need = required_poses(self.rules) + ([self.present_pose] if self.present_pose else [])
+        return [p for p in need if not self.poses.has(p)]
 
     def start(self, max_bricks: int | None = None) -> None:
         if self._thread and self._thread.is_alive():
@@ -188,6 +194,8 @@ class Orchestrator:
                         break
                     continue
                 misses = 0
+                if self.present_pose:
+                    self._carry_to_camera()
                 decision = self._inspect_and_decide()
                 self._place(decision)
                 self.lat["cycle_s"].append(time.time() - t_cycle)
@@ -242,6 +250,17 @@ class Orchestrator:
                 self.arm.hold()
                 return False
             time.sleep(max(0.0, 1.0 / fps - (time.perf_counter() - t)))
+
+    def _carry_to_camera(self) -> None:
+        """Pick-only policy: carry the held brick to the taught inspect pose, keeping the grip."""
+        self._set("presenting", f"carrying the brick to the '{self.present_pose}' pose")
+        pose = self.poses.get(self.present_pose)
+        pose[5] = float(self.arm.read_state()[5])
+        self._move(pose)
+        lo, hi = self.cfg["policy"]["holding_gripper"]
+        if not lo <= float(self.arm.read_state()[5]) <= hi:
+            self.event("gripper no longer reads 'holding' after carrying: brick dropped?")
+        self.event(f"brick carried to the '{self.present_pose}' pose")
 
     def _grab_inspect_frames(self) -> list[np.ndarray]:
         cam = self.cameras["inspect"]

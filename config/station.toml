@@ -24,10 +24,17 @@ top     = { kind = "realsense", source = "346422061366" }
 inspect = { kind = "realsense", source = "243722062690" }
 
 [policy]
-backend = "openvino"               # openvino | torch | fake
-path = "models/act_openvino"       # openvino: dir with act.xml; torch: LeRobot checkpoint dir (models/act)
-device = "GPU"                     # openvino: GPU | CPU | NPU ; torch: xpu | cpu
-n_action_steps = 100               # actions executed per predicted chunk (chunk is 100)
+backend = "openvino"               # openvino (ACT export from Studio) | lerobot (any LeRobot checkpoint: ACT,
+                                   #   SmolVLA, ...; PyTorch) | fake
+path = "models/act_openvino"       # openvino: dir with act.xml; lerobot: the checkpoint's pretrained_model dir
+device = "GPU"                     # openvino: GPU | CPU | NPU ; lerobot: xpu | cpu
+n_action_steps = 100               # actions executed per predicted chunk (capped at the model's chunk size)
+task = ""                          # lerobot VLAs (SmolVLA...): the EXACT task string the demos were recorded with
+camera_map = {}                    # lerobot: rename policy camera keys, e.g. { camera1 = "wrist", camera2 = "top" }
+crops = {}                         # lerobot: crop before resizing, e.g. { top = [0, 0, 560, 480] }
+present_pose = ""                  # "" = the policy itself holds the brick at the inspect camera.
+                                   # "inspect" = pick-only policy: after the pick, carry the brick to the taught
+                                   # "inspect" pose (brick-sorter teach inspect) before inspecting.
 pick_timeout = 40.0                # s without a presented brick -> give up this attempt
 present_still_s = 1.0              # arm still this long while holding = brick presented to the camera
 holding_gripper = [3.0, 15.0]      # gripper reading range that means "a brick is in the jaws"

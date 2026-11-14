@@ -3,7 +3,8 @@
 * OpenVINOACT: the Physical AI Studio ACT export (act.xml). Normalisation and the top-camera training crop are
   inside the graph: feed the raw state and full RGB frames in [0, 1]. Verified against LeRobot PyTorch on the
   same inputs: max |diff| 6e-5 over the 100x6 chunk. No PyTorch needed; runs on CPU / GPU / NPU.
-* TorchACT: the LeRobot checkpoint (baseline for the OPTIMIZE table; xpu or cpu).
+* LeRobotPolicy: any LeRobot checkpoint in PyTorch (ACT, SmolVLA, ...), with a task string for VLAs.
+  TorchACT is it preconfigured for the original ACT (baseline for the OPTIMIZE table).
 * FakePolicy: scripted reach -> grasp -> present for dry runs.
 """
 
@@ -115,38 +116,106 @@ class OpenVINOACT(Policy):
         return np.asarray(self.compiled(feed)[0])[0]
 
 
-class TorchACT(Policy):
-    def __init__(self, checkpoint: str | Path, device: str = "cpu", n_action_steps: int = 100,
-                 top_crop=(0, 0, 560, 480)):
+def torch_device(want: str) -> str:
+    import torch
+
+    ok = {"cpu": True, "xpu": hasattr(torch, "xpu") and torch.xpu.is_available(),
+          "cuda": torch.cuda.is_available(), "mps": torch.backends.mps.is_available()}
+    if ok.get(want.split(":")[0], False):
+        return want
+    log.warning("torch device %s not available; using cpu (this PyTorch is %s)", want, torch.__version__)
+    return "cpu"
+
+
+class LeRobotPolicy(Policy):
+    """Any LeRobot checkpoint (ACT, SmolVLA, Diffusion, pi0/pi0.5 ...) in PyTorch, with its saved processors.
+
+    * Camera keys: the checkpoint's `observation.images.<key>` inputs are fed from our cameras of the same name;
+      `camera_map` renames ({"camera1": "wrist"} feeds wrist into observation.images.camera1).
+    * Images are resized to the size the checkpoint expects; `crops` ({"top": [x, y, w, h]}) are applied first.
+    * `task` is the language instruction for VLAs (SmolVLA, pi0...). It must be the exact task string the
+      demos were recorded with; ACT ignores it.
+    """
+
+    def __init__(self, checkpoint: str | Path, device: str = "cpu", n_action_steps: int | None = None,
+                 task: str = "", camera_map: dict | None = None, crops: dict | None = None,
+                 robot_type: str = "so101_follower"):
         import torch
         from lerobot.configs.policies import PreTrainedConfig
-        from lerobot.policies.act.modeling_act import ACTPolicy
-        from lerobot.policies.factory import make_pre_post_processors
+        from lerobot.policies.factory import get_policy_class, make_pre_post_processors
 
-        super().__init__(n_action_steps)
         self.torch = torch
+        checkpoint = Path(checkpoint)
+        if not (checkpoint / "config.json").exists():
+            raise FileNotFoundError(f"{checkpoint}: not a LeRobot checkpoint (no config.json); use the "
+                                    "pretrained_model folder of the training output")
+        self.device = torch_device(device)
         cfg = PreTrainedConfig.from_pretrained(str(checkpoint))
-        cfg.device = device
-        self.device = device
-        self.policy = ACTPolicy.from_pretrained(str(checkpoint), config=cfg).to(device).eval()
+        cfg.device = self.device
+        self.kind = cfg.type
+        if n_action_steps and hasattr(cfg, "n_action_steps"):
+            cfg.n_action_steps = min(n_action_steps, getattr(cfg, "chunk_size", n_action_steps))
+        super().__init__(getattr(cfg, "n_action_steps", 1))
+        self.chunk_size = getattr(cfg, "chunk_size", self.n_action_steps)
+        self.policy = get_policy_class(cfg.type).from_pretrained(str(checkpoint), config=cfg).to(self.device).eval()
         self.pre, self.post = make_pre_post_processors(
             self.policy.config, pretrained_path=str(checkpoint),
-            preprocessor_overrides={"device_processor": {"device": device}})
-        self.chunk_size = cfg.chunk_size
-        self.top_crop = top_crop
+            preprocessor_overrides={"device_processor": {"device": self.device}})
+        self.task, self.robot_type = task, robot_type
+        self.crops = {k: tuple(int(v) for v in b) for k, b in (crops or {}).items()}
+        # policy image key -> (our camera, (H, W))
+        rename = dict(camera_map or {})
+        self.images: dict[str, tuple[str, tuple[int, int]]] = {}
+        for key, feat in self.policy.config.input_features.items():
+            if not key.startswith("observation.images."):
+                continue
+            suffix = key.removeprefix("observation.images.")
+            cam = rename.get(suffix, suffix)
+            if cam not in CAMERAS:
+                raise ValueError(f"policy input {key} has no camera: name the dataset cameras wrist/top/inspect, "
+                                 f"or set [policy] camera_map = {{ {suffix} = \"wrist\" }}")
+            self.images[key] = (cam, tuple(feat.shape[-2:]))
+        if self.kind in VLA_TYPES and not task:
+            log.warning("%s is language-conditioned but [policy] task is empty: set it to the exact task string "
+                        "used when recording", self.kind)
+        log.info("LeRobot %s on %s: chunk %s, executing %d per chunk, cameras %s, task %r", self.kind, self.device,
+                 self.chunk_size, self.n_action_steps, {k: v[0] for k, v in self.images.items()}, task)
+
+    def _observation(self, state, frames) -> dict:
+        obs = {"observation.state": np.asarray(state, np.float32)}
+        for key, (cam, (h, w)) in self.images.items():
+            img = cv2.cvtColor(frames[cam], cv2.COLOR_BGR2RGB)
+            if cam in self.crops:
+                x, y, cw, ch = self.crops[cam]
+                img = img[y:y + ch, x:x + cw]
+            if img.shape[:2] != (h, w):
+                img = cv2.resize(img, (w, h), interpolation=cv2.INTER_AREA)
+            obs[key] = np.ascontiguousarray(img)
+        return obs
+
+    def reset(self) -> None:
+        super().reset()
+        self.policy.reset()
 
     def predict_chunk(self, state, frames):
+        from lerobot.policies.utils import prepare_observation_for_inference
+
         torch = self.torch
-        obs = {"observation.state": torch.from_numpy(np.asarray(state, np.float32))[None]}
-        for cam in CAMERAS:
-            img = cv2.cvtColor(frames[cam], cv2.COLOR_BGR2RGB)
-            if cam == "top" and self.top_crop:
-                x, y, w, h = self.top_crop
-                img = img[y:y + h, x:x + w]
-            obs[f"observation.images.{cam}"] = torch.from_numpy(img).permute(2, 0, 1)[None].float() / 255.0
         with torch.inference_mode():
-            chunk = self.policy.predict_action_chunk(self.pre(obs))
+            batch = prepare_observation_for_inference(self._observation(state, frames), torch.device(self.device),
+                                                      self.task, self.robot_type)
+            chunk = self.policy.predict_action_chunk(self.pre(batch))
             return self.post(chunk)[0].float().cpu().numpy()
+
+
+VLA_TYPES = {"smolvla", "pi0", "pi05", "pi0_fast", "groot", "xvla", "molmoact2"}
+
+
+class TorchACT(LeRobotPolicy):
+    """The original downloaded ACT (top camera trained on the x 0-560 crop): the PyTorch baseline for `bench`."""
+
+    def __init__(self, checkpoint: str | Path, device: str = "cpu", n_action_steps: int = 100):
+        super().__init__(checkpoint, device, n_action_steps, crops={"top": (0, 0, 560, 480)})
 
 
 class FakePolicy(Policy):
@@ -180,8 +249,9 @@ def make_policy(cfg: dict) -> Policy:
     n = p.get("n_action_steps", 100)
     if p["backend"] == "openvino":
         return OpenVINOACT(p["path"], p.get("device", "GPU"), n, cache_dir=Path(p["path"]) / "cache")
-    if p["backend"] == "torch":
-        return TorchACT(p["path"], p.get("device", "cpu"), n)
+    if p["backend"] in ("lerobot", "torch"):
+        return LeRobotPolicy(p["path"], p.get("device", "cpu"), n, task=p.get("task", ""),
+                             camera_map=p.get("camera_map"), crops=p.get("crops"))
     if p["backend"] == "fake":
         return FakePolicy(n)
     raise ValueError(f"unknown policy backend {p['backend']!r}")

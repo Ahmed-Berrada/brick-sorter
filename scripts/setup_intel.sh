@@ -13,15 +13,17 @@
 #   7. downloads the models (scripts/download_models.sh)
 #   8. runs `brick-sorter doctor`
 #
-# Options: --no-apt (skip 1-3, e.g. no sudo), --no-models, --follower-serial <USB serial> (see ls /dev/serial/by-id)
+# Options: --no-apt (skip 1-3, e.g. no sudo), --no-models, --follower-serial <USB serial> (see ls /dev/serial/by-id),
+#          --xpu (PyTorch for the Intel GPU + SmolVLA deps: needed to run SmolVLA / LeRobot policies at usable speed)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT=$PWD
-NO_APT=0; NO_MODELS=0; FOLLOWER_SERIAL=""
+NO_APT=0; NO_MODELS=0; FOLLOWER_SERIAL=""; XPU=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --no-apt) NO_APT=1 ;;
     --no-models) NO_MODELS=1 ;;
+    --xpu) XPU=1 ;;
     --follower-serial) FOLLOWER_SERIAL="$2"; shift ;;
     *) echo "unknown option $1" >&2; exit 2 ;;
   esac
@@ -93,8 +95,17 @@ if ! command -v uv >/dev/null; then
   curl -LsSf https://astral.sh/uv/install.sh | sh
   export PATH="$HOME/.local/bin:$PATH"
 fi
-uv sync
-uv run python -c "import openvino as ov; print('OpenVINO', ov.__version__, ov.Core().available_devices)"
+if [ "$XPU" = 1 ]; then
+  uv sync --extra smolvla
+  # Intel GPU PyTorch replaces the CPU wheels; .venv/.xpu tells scripts/run.sh not to re-sync them away.
+  uv pip install --reinstall torch torchvision --index-url https://download.pytorch.org/whl/xpu
+  touch .venv/.xpu
+  uv run --no-sync python -c "import torch; print('torch', torch.__version__, 'xpu available:', torch.xpu.is_available())"
+else
+  uv sync
+  rm -f .venv/.xpu
+fi
+uv run --no-sync python -c "import openvino as ov; print('OpenVINO', ov.__version__, ov.Core().available_devices)"
 
 if [ "$NO_MODELS" = 0 ]; then
   step "7. models"
@@ -114,7 +125,7 @@ EOF
 fi
 
 step "8. doctor"
-uv run brick-sorter -c config/local.toml doctor || true
+uv run --no-sync brick-sorter -c config/local.toml doctor || true
 
 step "done"
 [ "$NEED_RELOGIN" = 1 ] && warn "log out and back in (or reboot) so the new groups apply"

@@ -89,3 +89,19 @@ def test_web_api(tmp_path):
         srv.shutdown()
         for c in cams.values():
             c.stop()
+
+
+def test_pick_only_policy_is_carried_to_the_inspect_pose(tmp_path):
+    orch, scene, cams = make(tmp_path, ["circle"])
+    orch.cfg["policy"]["present_pose"] = "inspect"
+    assert orch.missing_poses() == ["inspect"]
+    orch.poses.save("inspect", np.array([-30, -60, 60, 20, 0, 6], np.float32))
+    orch.start(max_bricks=1)
+    orch.join(60)
+    for c in cams.values():
+        c.stop()
+    msgs = [e["msg"] for e in orch.events]
+    assert orch.error is None and scene.placed == [("circle", "orange")]
+    i_carry = next(i for i, m in enumerate(msgs) if "carried to the 'inspect' pose" in m)
+    i_decide = next(i for i, m in enumerate(msgs) if m.startswith("circle"))
+    assert i_carry < i_decide

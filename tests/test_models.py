@@ -46,3 +46,17 @@ def test_inspector_runs_and_returns_an_outcome():
     assert set(ins.probabilities) == {"plain", "circle", "cross"}
     assert abs(sum(ins.probabilities.values()) - 1) < 1e-2
     assert ins.heatmap_jpeg[:2] == b"\xff\xd8"
+
+
+@pytest.mark.skipif(not (ROOT / "models/act/config.json").exists(), reason="checkpoint missing")
+def test_lerobot_backend_loads_act_and_checks_cameras():
+    pytest.importorskip("lerobot")
+    from brick_sorter.policy import LeRobotPolicy
+
+    p = LeRobotPolicy(ROOT / "models/act", "cpu", n_action_steps=10, crops={"top": (0, 0, 560, 480)})
+    assert p.kind == "act" and p.n_action_steps == 10
+    assert p.images["observation.images.top"] == ("top", (480, 560))
+    a = p.act(np.array([0, -100, 95, 5, 0, 1], np.float32), FRAMES)
+    assert a.shape == (6,) and len(p.queue) == 9
+    with pytest.raises(ValueError, match="camera_map"):
+        LeRobotPolicy(ROOT / "models/act", "cpu", camera_map={"wrist": "gripper_cam"})
